@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "358531910237",
+    "project_id": "carrentalmanager-37aa2",
+    "storage_bucket": "carrentalmanager-37aa2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:358531910237:android:c10e5ab12e0fe91e955bb4",
+        "android_client_info": {
+          "package_name": "com.example.car_rental_manager"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "358531910237-iab5h198kiug899uqig5lfk8ebjpaq3e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCHo4SXt8tnQ1HbakVpdnjTsL9qI1xKzSE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "358531910237-iab5h198kiug899uqig5lfk8ebjpaq3e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

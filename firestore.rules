@@ -1,0 +1,253 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ========================================
+    // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+    // ========================================
+    
+    // Проверить, аутентифицирован ли пользователь
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Проверить, является ли пользователь владельцем документа
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    // Получить роль пользователя
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.global_role;
+    }
+    
+    // Проверить, имеет ли пользователь определенную роль
+    function hasRole(role) {
+      return isSignedIn() && getUserRole() == role;
+    }
+    
+    // Проверить, является ли пользователь директором
+    function isDirector() {
+      return hasRole('DIRECTOR');
+    }
+    
+    // Проверить, является ли пользователь менеджером
+    function isManager() {
+      return hasRole('MANAGER');
+    }
+    
+    // Проверить, является ли пользователь владельцем
+    function isOwnerRole() {
+      return hasRole('OWNER');
+    }
+    
+    // Проверить, является ли пользователь директором конкретной организации
+    function isDirectorOfOrg(orgId) {
+      return isSignedIn() && 
+             get(/databases/$(database)/documents/organizations/$(orgId)).data.director_user_id == request.auth.uid;
+    }
+    
+    // Проверить, имеет ли пользователь доступ к организации
+    function hasAccessToOrg(orgId) {
+      return isSignedIn() && 
+             orgId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.organizations;
+    }
+    
+    // ========================================
+    // USERS COLLECTION
+    // ========================================
+    match /users/{userId} {
+      // Пользователь может читать свой профиль или директор может читать профили в своих организациях
+      allow read: if isOwner(userId) || isDirector();
+      
+      // Пользователь может обновлять свой профиль
+      allow update: if isOwner(userId);
+      
+      // Только директора могут создавать новых пользователей
+      allow create: if isDirector();
+      
+      // Удаление пользователей запрещено (soft delete через is_active)
+      allow delete: if false;
+    }
+    
+    // ========================================
+    // ORGANIZATIONS COLLECTION
+    // ========================================
+    match /organizations/{orgId} {
+      // Читать могут директор организации или пользователи с доступом
+      allow read: if isSignedIn() && (isDirectorOfOrg(orgId) || hasAccessToOrg(orgId));
+      
+      // Изменять может только директор организации
+      allow update: if isDirectorOfOrg(orgId);
+      
+      // Создавать организации могут только директора
+      allow create: if isDirector();
+      
+      // Удаление запрещено (soft delete через is_active)
+      allow delete: if false;
+    }
+    
+    // ========================================
+    // GARAGES COLLECTION
+    // ========================================
+    match /garages/{garageId} {
+      // Владелец личного гаража (любая роль) или директор корпоративного гаража
+      function isGarageOwner() {
+        let garage = resource.data;
+        return (garage.type == 'PERSONAL' && garage.owner_id == request.auth.uid) ||
+               (garage.type == 'COMPANY' && garage.director_id == request.auth.uid);
+      }
+      
+      // Директор управляющей компании для личного гаража
+      function isManagingDirector() {
+        let garage = resource.data;
+        return garage.type == 'PERSONAL' && 
+               garage.managing_company_id != null &&
+               isDirectorOfOrg(garage.managing_company_id);
+      }
+      
+      allow read: if isSignedIn() && (isGarageOwner() || isManagingDirector());
+      
+      // Создавать личный гараж может любой пользователь
+      allow create: if isSignedIn() && 
+                       ((request.resource.data.type == 'PERSONAL' && 
+                         request.resource.data.owner_id == request.auth.uid) ||
+                        (request.resource.data.type == 'COMPANY' && isDirector()));
+      
+      // Управлять может только владелец
+      allow update, delete: if isSignedIn() && isGarageOwner();
+    }
+    
+    // ========================================
+    // CARS COLLECTION
+    // ========================================
+    match /cars/{carId} {
+      // Владелец автомобиля
+      function isCarOwner() {
+        return resource.data.owner_id == request.auth.uid;
+      }
+      
+      // Директор управляющей компании
+      function isCarCompanyDirector() {
+        return resource.data.company_id != null && 
+               isDirectorOfOrg(resource.data.company_id);
+      }
+      
+      // Есть права на просмотр через permissions
+      function hasViewPermission() {
+        return exists(/databases/$(database)/documents/cars/$(carId)/permissions/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/cars/$(carId)/permissions/$(request.auth.uid)).data.can_view == true;
+      }
+      
+      // Читать могут: владелец, директор управляющей компании, или с правами
+      allow read: if isSignedIn() && (isCarOwner() || isCarCompanyDirector() || hasViewPermission());
+      
+      // Создавать могут: любой пользователь для своего личного гаража, или директора для компании
+      allow create: if isSignedIn() && 
+                       ((request.resource.data.garage_type == 'PERSONAL' && 
+                         request.resource.data.owner_id == request.auth.uid) ||
+                        (request.resource.data.garage_type == 'COMPANY' && isDirector()));
+      
+      // Обновлять могут: владелец или директор управляющей компании
+      allow update: if isSignedIn() && (isCarOwner() || isCarCompanyDirector());
+      
+      // Удалять может только владелец
+      allow delete: if isSignedIn() && isCarOwner();
+      
+      // ========================================
+      // CAR PERMISSIONS SUBCOLLECTION
+      // ========================================
+      match /permissions/{permissionUserId} {
+        // Владелец авто или директор управляющей компании могут управлять правами
+        function canManagePermissions() {
+          let car = get(/databases/$(database)/documents/cars/$(carId)).data;
+          return (car.owner_id == request.auth.uid) ||
+                 (car.company_id != null && isDirectorOfOrg(car.company_id));
+        }
+        
+        // Читать свои права может сам пользователь
+        allow read: if isSignedIn() && (permissionUserId == request.auth.uid || canManagePermissions());
+        
+        // Создавать/изменять/удалять права могут только владелец или директор
+        allow write: if isSignedIn() && canManagePermissions();
+      }
+    }
+    
+    // ========================================
+    // RENTALS COLLECTION
+    // ========================================
+    match /rentals/{rentalId} {
+      // Создатель брони
+      function isRentalCreator() {
+        return resource.data.rental_user_id == request.auth.uid;
+      }
+      
+      // Владелец автомобиля
+      function isRentalCarOwner() {
+        return resource.data.car_owner_id == request.auth.uid;
+      }
+      
+      // Директор управляющей компании
+      function isRentalCompanyDirector() {
+        return resource.data.managing_company_id != null && 
+               isDirectorOfOrg(resource.data.managing_company_id);
+      }
+      
+      // Есть права на бронирование автомобиля
+      function hasBookingPermission(carId) {
+        return exists(/databases/$(database)/documents/cars/$(carId)/permissions/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/cars/$(carId)/permissions/$(request.auth.uid)).data.can_book == true;
+      }
+      
+      // Читать могут: создатель, владелец авто, директор управляющей компании
+      allow read: if isSignedIn() && (isRentalCreator() || isRentalCarOwner() || isRentalCompanyDirector());
+      
+      // Создавать могут: директор или менеджер с правами на бронирование
+      allow create: if isSignedIn() && 
+                       (isDirector() || 
+                        (isManager() && hasBookingPermission(request.resource.data.car_id)));
+      
+      // Обновлять могут: создатель или директор управляющей компании
+      allow update: if isSignedIn() && (isRentalCreator() || isRentalCompanyDirector());
+      
+      // Удаление запрещено (используйте изменение статуса)
+      allow delete: if false;
+      
+      // ========================================
+      // MESSAGES SUBCOLLECTION
+      // ========================================
+      match /messages/{messageId} {
+        // Доступ к сообщениям имеют те же, кто имеет доступ к аренде
+        allow read: if isSignedIn() && (isRentalCreator() || isRentalCarOwner() || isRentalCompanyDirector());
+        
+        // Создавать сообщения могут те же
+        allow create: if isSignedIn() && (isRentalCreator() || isRentalCarOwner() || isRentalCompanyDirector());
+        
+        // Обновлять и удалять сообщения может только отправитель
+        allow update, delete: if isSignedIn() && resource.data.sender_id == request.auth.uid;
+      }
+    }
+    
+    // ========================================
+    // CLIENTS COLLECTION
+    // ========================================
+    match /clients/{clientId} {
+      // Читать могут все аутентифицированные пользователи
+      allow read: if isSignedIn();
+      
+      // Создавать/обновлять могут директора и менеджеры
+      allow create, update: if isSignedIn() && (isDirector() || isManager());
+      
+      // Удаление запрещено (soft delete)
+      allow delete: if false;
+    }
+    
+    // ========================================
+    // DEFAULT DENY
+    // ========================================
+    // Все остальные пути запрещены
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
